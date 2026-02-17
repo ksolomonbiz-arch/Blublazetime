@@ -305,7 +305,7 @@ function Narrative() {
   return (
     <section style={{
       padding: "80px 24px 100px",
-      background: "linear-gradient(180deg, #0f0c29 0%, #13112e 60%, #faf9f7 100%)",
+      background: "linear-gradient(180deg, #0f0c29 0%, #13112e 70%, #1a1a2e 100%)",
     }}>
       <div style={{ maxWidth: 620, margin: "0 auto" }}>
         {/* Header */}
@@ -598,8 +598,7 @@ function HowItWorks() {
 }
 
 // ─── ROUTINE BUILDER (MINI APP) ──────────────────
-function RoutineBuilder({ activityList }) {
-  const [selectedDays, setSelectedDays] = useState({});
+function RoutineBuilder({ activityList, selectedDays, setSelectedDays }) {
   const [filter, setFilter] = useState("all");
   const [familySize, setFamilySize] = useState(4);
   const [kidsAge, setKidsAge] = useState("school");
@@ -959,7 +958,39 @@ function ActivityMatcher({ eventList }) {
                     padding: "6px 14px",
                     borderRadius: 50,
                   }}>{evt.free ? "FREE" : "PAID"}</span>
-                  <button style={{
+                  <button onClick={(e) => {
+                    // Parse the date (e.g. "Mar 8" -> 20260308)
+                    const months = { Jan:"01",Feb:"02",Mar:"03",Apr:"04",May:"05",Jun:"06",Jul:"07",Aug:"08",Sep:"09",Oct:"10",Nov:"11",Dec:"12" };
+                    const parts = evt.date.split(" ");
+                    const mo = months[parts[0]] || "03";
+                    const dy = (parts[1] || "1").padStart(2, "0");
+                    const dateStr = `2026${mo}${dy}`;
+                    const nextDay = `2026${mo}${String(parseInt(dy)+1).padStart(2,"0")}`;
+
+                    const ics = [
+                      "BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//BluBlazeTime//EN",
+                      "BEGIN:VEVENT",
+                      `DTSTART;VALUE=DATE:${dateStr}`,
+                      `DTEND;VALUE=DATE:${nextDay}`,
+                      `SUMMARY:${evt.title}`,
+                      `DESCRIPTION:${evt.title} at ${evt.location}. Source: ${evt.source}. Found on BluBlazeTime.`,
+                      `LOCATION:${evt.location}`,
+                      `UID:bbt-${dateStr}-${Date.now()}@blublazetime.com`,
+                      "STATUS:CONFIRMED",
+                      "END:VEVENT","END:VCALENDAR"
+                    ].join("\r\n");
+
+                    const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `${evt.title.replace(/\s+/g, "-")}.ics`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    e.currentTarget.textContent = "✓ Added!";
+                  }} style={{
                     background: "#1a1a2e",
                     color: "#fff",
                     border: "none",
@@ -969,6 +1000,7 @@ function ActivityMatcher({ eventList }) {
                     fontSize: 13,
                     fontWeight: 700,
                     cursor: "pointer",
+                    transition: "all 0.2s",
                   }}>+ Calendar</button>
                 </div>
               </div>
@@ -987,202 +1019,280 @@ function ActivityMatcher({ eventList }) {
 }
 
 // ─── CALENDAR PREVIEW ────────────────────────────
-function CalendarPreview() {
+function CalendarPreview({ selectedDays: selectedDaysProp, activities: activitiesProp }) {
   const [syncedTo, setSyncedTo] = useState(null);
-  const days = Array.from({ length: 28 }, (_, i) => i + 1);
-  const events = { 3: "🎨", 5: "🌿", 8: "🎲", 10: "🔭", 12: "👨‍🍳", 14: "💃", 17: "🚲", 19: "📸", 21: "🧪", 24: "⭐", 26: "🎤", 28: "🌻" };
+  const [exported, setExported] = useState(false);
+
+  const selectedDays = selectedDaysProp || {};
+  const activities = activitiesProp || [];
+
+  // March 2026: starts on Sunday. Mon=0 ... Sun=6
+  const marchStartDow = 6; // March 1 is Sunday
+  const marchDays = 31;
+  const dayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+  // Build blank cells + real day cells
+  const blanks = Array.from({ length: marchStartDow }, (_, i) => ({ blank: true, key: `b${i}` }));
+  const realDays = Array.from({ length: marchDays }, (_, i) => ({ day: i + 1, key: `d${i + 1}` }));
+  const calCells = [...blanks, ...realDays];
+
+  // Get day-of-week name for a March date
+  const getDow = (dayNum) => dayNames[(marchStartDow + dayNum - 1) % 7];
+
+  // Get activities assigned to a specific day-of-week name
+  const getActivitiesForDow = (dowName) => {
+    const matched = [];
+    Object.entries(selectedDays).forEach(([key, val]) => {
+      if (!val) return;
+      const parts = key.split("-");
+      const actDay = parts[parts.length - 1];
+      const actId = parseInt(parts[0]);
+      if (actDay === dowName) {
+        const act = activities.find(a => a.id === actId);
+        if (act) matched.push(act);
+      }
+    });
+    return matched;
+  };
+
+  const hasSelections = Object.values(selectedDays).some(v => v);
+
+  // Build export list
+  const buildExportEvents = () => {
+    const out = [];
+    for (let d = 1; d <= marchDays; d++) {
+      getActivitiesForDow(getDow(d)).forEach(act => {
+        out.push({ day: d, name: `${act.emoji} ${act.name}`, desc: `${act.desc}. Planned with BluBlazeTime.` });
+      });
+    }
+    return out;
+  };
+
+  const generateICS = () => {
+    const evts = buildExportEvents();
+    const lines = [
+      "BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//BluBlazeTime//EN",
+      "CALSCALE:GREGORIAN","METHOD:PUBLISH","X-WR-CALNAME:BluBlazeTime Family Activities",
+    ];
+    evts.forEach(evt => {
+      const ds = String(evt.day).padStart(2, "0");
+      const nd = evt.day + 1 > 31 ? "20260401" : `202603${String(evt.day + 1).padStart(2, "0")}`;
+      lines.push("BEGIN:VEVENT",
+        `DTSTART;VALUE=DATE:202603${ds}`, `DTEND;VALUE=DATE:${nd}`,
+        `SUMMARY:${evt.name}`, `DESCRIPTION:${evt.desc}`,
+        `UID:bbt-${ds}-${evt.name.replace(/[^a-zA-Z0-9]/g, "")}-${Date.now()}@blublazetime.com`,
+        "STATUS:CONFIRMED", "END:VEVENT");
+    });
+    lines.push("END:VCALENDAR");
+    return lines.join("\r\n");
+  };
+
+  const downloadICS = () => {
+    const blob = new Blob([generateICS()], { type: "text/calendar;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url;
+    a.download = "BluBlazeTime-My-Family-Routine.ics";
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
+  };
+
+  const syncApple = () => { downloadICS(); setSyncedTo("apple"); setExported(true); };
+  const syncGoogle = () => {
+    const evts = buildExportEvents();
+    if (evts.length > 0) {
+      const f = evts[0]; const ds = String(f.day).padStart(2, "0"); const nd = String(f.day + 1).padStart(2, "0");
+      window.open(`https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(f.name)}&dates=202603${ds}/202603${nd}&details=${encodeURIComponent(f.desc + "\n\nImport the downloaded .ics file to add all events → Google Calendar → Settings → Import & Export → Import")}`, "_blank");
+    }
+    downloadICS(); setSyncedTo("google"); setExported(true);
+  };
+
+  const totalEvents = buildExportEvents().length;
 
   return (
     <section style={{
-      padding: "100px 24px",
+      padding: "100px clamp(12px, 4vw, 24px)",
       background: "linear-gradient(180deg, #16213e 0%, #1a1a2e 100%)",
     }}>
       <div style={{ maxWidth: 700, margin: "0 auto", textAlign: "center" }}>
         <div style={{
           display: "inline-block",
           background: "rgba(255,212,59,0.12)",
-          borderRadius: 50,
-          padding: "6px 20px",
-          fontSize: 13,
-          fontFamily: "'DM Sans', sans-serif",
-          fontWeight: 600,
-          color: "#FFD43B",
-          letterSpacing: 1,
-          textTransform: "uppercase",
-          marginBottom: 20,
-        }}>📅 Built Into The App</div>
+          borderRadius: 50, padding: "6px 20px", fontSize: 13,
+          fontFamily: "'DM Sans', sans-serif", fontWeight: 600,
+          color: "#FFD43B", letterSpacing: 1, textTransform: "uppercase", marginBottom: 20,
+        }}>📅 Your Personal Calendar</div>
         <h2 style={{
           fontFamily: "'Playfair Display', serif",
-          fontSize: "clamp(2rem, 4vw, 3rem)",
-          fontWeight: 900,
-          color: "#fff",
-          marginBottom: 12,
+          fontSize: "clamp(2rem, 4vw, 3rem)", fontWeight: 900, color: "#fff", marginBottom: 12,
         }}>Family Calendar</h2>
         <p style={{
-          fontFamily: "'DM Sans', sans-serif",
-          fontSize: 16,
-          color: "rgba(255,255,255,0.5)",
-          marginBottom: 48,
-        }}>Your activities auto-populate. One glance = your whole month.</p>
-
-        {/* Sync Buttons */}
-        <div style={{
-          display: "flex",
-          gap: 14,
-          justifyContent: "center",
-          marginBottom: 28,
-          flexWrap: "wrap",
+          fontFamily: "'DM Sans', sans-serif", fontSize: 16,
+          color: "rgba(255,255,255,0.5)", marginBottom: 16,
         }}>
-          <button
-            onClick={() => setSyncedTo(syncedTo === "google" ? null : "google")}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              padding: "14px 28px",
-              borderRadius: 50,
-              background: syncedTo === "google"
-                ? "linear-gradient(135deg, #4285F4, #34A853)"
-                : "rgba(255,255,255,0.06)",
-              border: syncedTo === "google"
-                ? "none"
-                : "1px solid rgba(255,255,255,0.12)",
-              color: "#fff",
-              fontFamily: "'DM Sans', sans-serif",
-              fontSize: 14,
-              fontWeight: 700,
-              cursor: "pointer",
+          {hasSelections
+            ? `${totalEvents} activities scheduled this month from your routine.`
+            : "Build your routine above — your choices will appear here automatically."}
+        </p>
+
+        {/* Empty state nudge */}
+        {!hasSelections && (
+          <button onClick={() => document.getElementById("routine-builder")?.scrollIntoView({ behavior: "smooth" })} style={{
+            background: "linear-gradient(135deg, #FF6B6B, #FF922B)",
+            color: "#fff", border: "none", borderRadius: 50,
+            padding: "14px 32px", fontFamily: "'DM Sans', sans-serif",
+            fontSize: 15, fontWeight: 700, cursor: "pointer", marginBottom: 40,
+            boxShadow: "0 6px 24px rgba(255,107,107,0.3)",
+          }}>↑ Build My Routine First</button>
+        )}
+
+        {/* Sync Buttons - only show when they have selections */}
+        {hasSelections && (
+          <div style={{
+            display: "flex", gap: 10, justifyContent: "center",
+            marginBottom: 28, flexWrap: "wrap", padding: "0 4px",
+          }}>
+            <button onClick={syncGoogle} style={{
+              display: "flex", alignItems: "center", gap: 8,
+              padding: "12px clamp(16px, 4vw, 28px)", borderRadius: 50,
+              background: syncedTo === "google" ? "linear-gradient(135deg, #4285F4, #34A853)" : "rgba(255,255,255,0.06)",
+              border: syncedTo === "google" ? "none" : "1px solid rgba(255,255,255,0.12)",
+              color: "#fff", fontFamily: "'DM Sans', sans-serif",
+              fontSize: "clamp(12px, 3vw, 14px)", fontWeight: 700, cursor: "pointer",
               transition: "all 0.3s",
               boxShadow: syncedTo === "google" ? "0 6px 24px rgba(66,133,244,0.35)" : "none",
-            }}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-              <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>
-              <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-              <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18A10.96 10.96 0 001 12c0 1.77.42 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
-              <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-            </svg>
-            {syncedTo === "google" ? "✓ Synced to Google" : "Sync to Google Calendar"}
-          </button>
+            }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>
+                <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18A10.96 10.96 0 001 12c0 1.77.42 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
+                <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+              </svg>
+              {syncedTo === "google" ? `✓ ${totalEvents} Events Synced` : "Sync to Google Calendar"}
+            </button>
 
-          <button
-            onClick={() => setSyncedTo(syncedTo === "apple" ? null : "apple")}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              padding: "14px 28px",
-              borderRadius: 50,
-              background: syncedTo === "apple"
-                ? "linear-gradient(135deg, #FF3B30, #FF6B6B)"
-                : "rgba(255,255,255,0.06)",
-              border: syncedTo === "apple"
-                ? "none"
-                : "1px solid rgba(255,255,255,0.12)",
-              color: "#fff",
-              fontFamily: "'DM Sans', sans-serif",
-              fontSize: 14,
-              fontWeight: 700,
-              cursor: "pointer",
+            <button onClick={syncApple} style={{
+              display: "flex", alignItems: "center", gap: 8,
+              padding: "12px clamp(16px, 4vw, 28px)", borderRadius: 50,
+              background: syncedTo === "apple" ? "linear-gradient(135deg, #FF3B30, #FF6B6B)" : "rgba(255,255,255,0.06)",
+              border: syncedTo === "apple" ? "none" : "1px solid rgba(255,255,255,0.12)",
+              color: "#fff", fontFamily: "'DM Sans', sans-serif",
+              fontSize: "clamp(12px, 3vw, 14px)", fontWeight: 700, cursor: "pointer",
               transition: "all 0.3s",
               boxShadow: syncedTo === "apple" ? "0 6px 24px rgba(255,59,48,0.35)" : "none",
-            }}
-          >
-            <svg width="16" height="18" viewBox="0 0 16 20" fill="currentColor">
-              <path d="M13.34 10.05c-.02-2.26 1.84-3.34 1.93-3.4-1.05-1.54-2.69-1.75-3.27-1.77-1.39-.14-2.72.82-3.43.82-.71 0-1.81-.8-2.97-.78-1.53.02-2.94.89-3.73 2.26-1.59 2.76-.41 6.85 1.14 9.09.76 1.1 1.66 2.33 2.85 2.29 1.14-.05 1.57-.74 2.95-.74 1.38 0 1.77.74 2.97.71 1.23-.02 2.01-1.12 2.76-2.22.87-1.27 1.23-2.51 1.25-2.57-.03-.01-2.4-.92-2.42-3.66zM11.07 3.28c.63-.76 1.05-1.82.94-2.88-.91.04-2.01.61-2.66 1.37-.59.68-1.1 1.76-.96 2.8 1.01.08 2.04-.52 2.68-1.29z"/>
-            </svg>
-            {syncedTo === "apple" ? "✓ Synced to Apple" : "Sync to Apple Calendar"}
-          </button>
-        </div>
-
-        {syncedTo && (
-          <div style={{
-            textAlign: "center",
-            marginBottom: 24,
-            padding: "12px 20px",
-            background: syncedTo === "google" ? "rgba(66,133,244,0.1)" : "rgba(255,59,48,0.1)",
-            borderRadius: 12,
-            maxWidth: 480,
-            margin: "0 auto 24px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 8,
-          }}>
-            <span style={{ fontSize: 16 }}>✅</span>
-            <span style={{
-              fontFamily: "'DM Sans', sans-serif",
-              fontSize: 14,
-              fontWeight: 600,
-              color: syncedTo === "google" ? "#4285F4" : "#FF3B30",
             }}>
-              Activities will auto-sync to your {syncedTo === "google" ? "Google" : "Apple"} Calendar
-            </span>
+              <svg width="16" height="18" viewBox="0 0 16 20" fill="currentColor">
+                <path d="M13.34 10.05c-.02-2.26 1.84-3.34 1.93-3.4-1.05-1.54-2.69-1.75-3.27-1.77-1.39-.14-2.72.82-3.43.82-.71 0-1.81-.8-2.97-.78-1.53.02-2.94.89-3.73 2.26-1.59 2.76-.41 6.85 1.14 9.09.76 1.1 1.66 2.33 2.85 2.29 1.14-.05 1.57-.74 2.95-.74 1.38 0 1.77.74 2.97.71 1.23-.02 2.01-1.12 2.76-2.22.87-1.27 1.23-2.51 1.25-2.57-.03-.01-2.4-.92-2.42-3.66zM11.07 3.28c.63-.76 1.05-1.82.94-2.88-.91.04-2.01.61-2.66 1.37-.59.68-1.1 1.76-.96 2.8 1.01.08 2.04-.52 2.68-1.29z"/>
+              </svg>
+              {syncedTo === "apple" ? `✓ ${totalEvents} Events Synced` : "Sync to Apple Calendar"}
+            </button>
           </div>
         )}
 
+        {exported && syncedTo && (
+          <div style={{
+            textAlign: "center", marginBottom: 24, padding: "16px 20px",
+            background: syncedTo === "google" ? "rgba(66,133,244,0.1)" : "rgba(255,59,48,0.1)",
+            borderRadius: 16, maxWidth: 520, margin: "0 auto 24px",
+            border: `1px solid ${syncedTo === "google" ? "rgba(66,133,244,0.2)" : "rgba(255,59,48,0.2)"}`,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginBottom: 8 }}>
+              <span style={{ fontSize: 16 }}>✅</span>
+              <span style={{
+                fontFamily: "'DM Sans', sans-serif", fontSize: 15, fontWeight: 700,
+                color: syncedTo === "google" ? "#4285F4" : "#FF3B30",
+              }}>
+                {totalEvents} events downloaded!
+              </span>
+            </div>
+            <p style={{
+              fontFamily: "'DM Sans', sans-serif", fontSize: 13,
+              color: "rgba(255,255,255,0.5)", lineHeight: 1.6, margin: 0,
+            }}>
+              {syncedTo === "apple"
+                ? "Open the .ics file on your iPhone, iPad, or Mac — it'll add your activities to Apple Calendar automatically."
+                : "We opened Google Calendar with your first event. Import the downloaded .ics file to add all events: Settings → Import & Export → Import."}
+            </p>
+          </div>
+        )}
+
+        {/* Calendar Grid */}
         <div style={{
-          background: "rgba(255,255,255,0.04)",
-          borderRadius: 24,
-          padding: 32,
-          border: "1px solid rgba(255,255,255,0.08)",
+          background: "rgba(255,255,255,0.04)", borderRadius: 24,
+          padding: "clamp(16px, 4vw, 32px)", border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden",
         }}>
           <div style={{
-            fontFamily: "'Playfair Display', serif",
-            fontSize: 22,
-            fontWeight: 700,
-            color: "#fff",
-            marginBottom: 24,
+            fontFamily: "'Playfair Display', serif", fontSize: 22, fontWeight: 700,
+            color: "#fff", marginBottom: 24,
           }}>March 2026</div>
+
+          {/* Day headers */}
           <div style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(7, 1fr)",
-            gap: 8,
-            marginBottom: 12,
+            display: "grid", gridTemplateColumns: "repeat(7, 1fr)",
+            gap: "clamp(3px, 1vw, 8px)", marginBottom: 12,
           }}>
-            {DAYS.map(d => (
+            {dayNames.map(d => (
               <div key={d} style={{
                 fontFamily: "'DM Sans', sans-serif",
-                fontSize: 12,
-                fontWeight: 700,
-                color: "rgba(255,255,255,0.3)",
-                textTransform: "uppercase",
-                letterSpacing: 1,
-                padding: "8px 0",
+                fontSize: "clamp(9px, 2.5vw, 12px)", fontWeight: 700,
+                color: "rgba(255,255,255,0.3)", textTransform: "uppercase",
+                letterSpacing: "clamp(0px, 0.3vw, 1px)", padding: "8px 0", textAlign: "center",
               }}>{d}</div>
             ))}
           </div>
+
+          {/* Day cells */}
           <div style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(7, 1fr)",
-            gap: 8,
+            display: "grid", gridTemplateColumns: "repeat(7, 1fr)",
+            gap: "clamp(3px, 1vw, 8px)",
           }}>
-            {days.map(d => (
-              <div key={d} style={{
-                aspectRatio: "1",
-                borderRadius: 12,
-                background: events[d] ? "rgba(255,107,107,0.12)" : "rgba(255,255,255,0.02)",
-                border: events[d] ? "1px solid rgba(255,107,107,0.25)" : "1px solid rgba(255,255,255,0.04)",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 2,
-                transition: "transform 0.2s",
-                cursor: events[d] ? "pointer" : "default",
-              }}
-              onMouseEnter={e => { if (events[d]) e.currentTarget.style.transform = "scale(1.1)"; }}
-              onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; }}
-              >
-                <span style={{
-                  fontFamily: "'DM Sans', sans-serif",
-                  fontSize: 13,
-                  fontWeight: 600,
-                  color: events[d] ? "#fff" : "rgba(255,255,255,0.3)",
-                }}>{d}</span>
-                {events[d] && <span style={{ fontSize: 16 }}>{events[d]}</span>}
-              </div>
-            ))}
+            {calCells.map(cell => {
+              if (cell.blank) {
+                return <div key={cell.key} style={{ aspectRatio: "1" }} />;
+              }
+              const d = cell.day;
+              const dow = getDow(d);
+              const dayActs = getActivitiesForDow(dow);
+              const hasActs = dayActs.length > 0;
+              const firstAct = dayActs[0];
+              const actColor = firstAct ? firstAct.color : null;
+
+              return (
+                <div key={cell.key} title={hasActs ? dayActs.map(a => a.name).join(", ") : ""} style={{
+                  aspectRatio: "1",
+                  borderRadius: "clamp(6px, 1.5vw, 12px)",
+                  background: hasActs ? `${actColor}20` : "rgba(255,255,255,0.02)",
+                  border: hasActs ? `1px solid ${actColor}40` : "1px solid rgba(255,255,255,0.04)",
+                  display: "flex", flexDirection: "column", alignItems: "center",
+                  justifyContent: "center", gap: 1, transition: "transform 0.2s",
+                  cursor: hasActs ? "pointer" : "default", minWidth: 0, position: "relative",
+                }}
+                onMouseEnter={e => { if (hasActs) e.currentTarget.style.transform = "scale(1.1)"; }}
+                onMouseLeave={e => { e.currentTarget.style.transform = "scale(1)"; }}
+                >
+                  <span style={{
+                    fontFamily: "'DM Sans', sans-serif",
+                    fontSize: "clamp(10px, 2.5vw, 13px)", fontWeight: 600,
+                    color: hasActs ? "#fff" : "rgba(255,255,255,0.3)",
+                  }}>{d}</span>
+                  {hasActs && (
+                    <span style={{ fontSize: "clamp(10px, 3vw, 16px)", lineHeight: 1 }}>
+                      {dayActs.length <= 2
+                        ? dayActs.map(a => a.emoji).join("")
+                        : `${firstAct.emoji}+${dayActs.length - 1}`}
+                    </span>
+                  )}
+                  {dayActs.length > 1 && (
+                    <span style={{
+                      position: "absolute", top: 2, right: 3,
+                      background: actColor, color: "#fff",
+                      fontSize: 8, fontWeight: 800, width: 14, height: 14,
+                      borderRadius: "50%", display: "flex", alignItems: "center",
+                      justifyContent: "center", lineHeight: 1,
+                    }}>{dayActs.length}</span>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -1268,8 +1378,8 @@ function Footer() {
 }
 
 // ─── WRAPPERS (pass admin data to components) ────
-function RoutineBuilderWrapper({ activities }) {
-  return <RoutineBuilder activityList={activities} />;
+function RoutineBuilderWrapper({ activities, selectedDays, setSelectedDays }) {
+  return <RoutineBuilder activityList={activities} selectedDays={selectedDays} setSelectedDays={setSelectedDays} />;
 }
 function ActivityMatcherWrapper({ events }) {
   return <ActivityMatcher eventList={events} />;
@@ -1645,6 +1755,7 @@ export default function BluBlazeTime() {
   const [showAdmin, setShowAdmin] = useState(false);
   const [activities, setActivities] = useState(ACTIVITIES);
   const [events, setEvents] = useState(LOCAL_EVENTS);
+  const [selectedDays, setSelectedDays] = useState({});
 
   return (
     <div style={{ margin: 0, padding: 0, background: "#0f0c29", minHeight: "100vh" }}>
@@ -1686,9 +1797,9 @@ export default function BluBlazeTime() {
       <Hero />
       <Narrative />
       <HowItWorks />
-      <RoutineBuilderWrapper activities={activities} />
+      <RoutineBuilderWrapper activities={activities} selectedDays={selectedDays} setSelectedDays={setSelectedDays} />
       <ActivityMatcherWrapper events={events} />
-      <CalendarPreview />
+      <CalendarPreview selectedDays={selectedDays} activities={activities} />
       <CTA />
       <Footer />
     </div>
